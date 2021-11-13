@@ -23,6 +23,7 @@ from losses import DistillationLoss
 from samplers import RASampler
 import models
 import utils
+import wandb
 
 
 def get_args_parser():
@@ -31,7 +32,7 @@ def get_args_parser():
     parser.add_argument('--epochs', default=300, type=int)
 
     # Model parameters
-    parser.add_argument('--model', default='deit_base_patch16_224', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='deit_tiny_patch16_224', type=str, metavar='MODEL',
                         help='Name of model to train')
     parser.add_argument('--input-size', default=224, type=int, help='images input size')
 
@@ -170,6 +171,9 @@ def get_args_parser():
 
 def main(args):
     utils.init_distributed_mode(args)
+
+    wandb.init(project="transformer", entity="sonaalk")
+    wandb.config(args)
 
     print(args)
 
@@ -402,6 +406,8 @@ def main(args):
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
+        
+        wandb.log(log_stats)
 
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
