@@ -1,9 +1,11 @@
 # Copyright (c) 2015-present, Facebook, Inc.
 # All rights reserved.
-import os
+import os,glob
 import json
 import pandas as pd
-
+import pickle
+import random
+from PIL import Image
 from torch.utils.data import Dataset
 
 from torchvision import datasets, transforms
@@ -55,6 +57,41 @@ class INatDataset(ImageFolder):
 
     # __getitem__ and __len__ inherited from ImageFolder
 
+class ImagentSubset(Dataset):
+    def __init__(self, root, transform) -> None:
+        super().__init__()
+        classnames = os.listdir(root)
+        
+        self.nb_classes = 100
+        self.transform = transform
+
+        if not os.path.isfile("imnet_class_info.pkl"):
+            classnames = random.sample(classnames, self.nb_classes)
+            class2idx = {cls : i for i,cls in enumerate(classnames) }
+            pickle.dump(class2idx, open("imnet_class_info.pkl", "wb"))
+        else:
+            class2idx = pickle.load(open("imnet_class_info.pkl", "rb"))
+            classnames = list(class2idx.keys())
+
+        self.imnames = list()
+        self.labels = list()
+
+        for i,cls in enumerate(classnames):
+            ims = glob.glob(os.path.join(root, cls + "/*"))
+            lab = [class2idx[cls]]*len(ims)
+
+            self.imnames += ims
+            self.labels += lab
+
+    def __len__(self):
+        return len(self.imnames)
+    
+    def __getitem__(self, idx):
+        img = self.imnames[idx]
+        label = self.labels[idx]
+        img = Image.open(img).convert('RGB')
+        return self.transform(img), label
+
 
 def build_dataset(is_train, args):
     transform = build_transform(is_train, args)
@@ -64,8 +101,10 @@ def build_dataset(is_train, args):
         nb_classes = 100
     elif args.data_set == 'IMNET':
         root = os.path.join(args.data_path, 'train' if is_train else 'val')
-        dataset = datasets.ImageFolder(root, transform=transform)
-        nb_classes = 1000
+        # dataset = datasets.ImageFolder(root, transform=transform)
+        # nb_classes = 1000
+        dataset = ImagentSubset(root,transform=transform)
+        nb_classes = dataset.nb_classes
     elif args.data_set == 'INAT':
         dataset = INatDataset(args.data_path, train=is_train, year=2018,
                               category=args.inat_category, transform=transform)
@@ -110,3 +149,14 @@ def build_transform(is_train, args):
     t.append(transforms.ToTensor())
     t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
     return transforms.Compose(t)
+
+if __name__ == '__main__':
+    is_train = True
+    data_path = "/fs/vulcan-datasets/imagenet/"
+    data_path = os.path.join(data_path, 'train' if is_train else 'val')
+    transform = []
+    transform.append(transforms.ToTensor())
+    transform.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
+    transform = transforms.Compose(transform)
+
+    
