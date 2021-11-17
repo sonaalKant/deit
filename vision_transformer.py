@@ -201,6 +201,34 @@ class Attention(nn.Module):
         x = self.proj_drop(x)
         return x
 
+class CrossAttention(nn.Module):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = head_dim ** -0.5
+
+        self.qkv = nn.ModuleList([nn.Linear(dim, dim, bias=qkv_bias) for _ in range(3)])
+
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, query, key, value):
+        B, N, C = query.shape
+
+        query, key, value = [l(x).view(B, N, self.num_heads, -1).permute(0,2,1,3)
+                             for l, x in zip(self.qkv, (query, key, value))]
+
+        attn = (query @ key.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x = (attn @ value).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        
+        return x
 
 class Block(nn.Module):
 
@@ -220,6 +248,35 @@ class Block(nn.Module):
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
+class CustomizedBlock(nn.Module):
+
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.,
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, attn_type="self"):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn_type = attn_type
+        if self.attn_type == 'cross':
+            self.norm_mid = norm_layer(dim)
+        # self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        self.attn = CrossAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+
+    def forward(self, x):
+        x, x_prev = x 
+        if self.attn_type == 'self':
+            x_norm = self.norm1(x)
+            x_out = x + self.drop_path(self.attn(x_norm, x_norm, x_norm))
+            x_out = x_out + self.drop_path(self.mlp(self.norm2(x_out)))
+        else:
+            x_norm = self.norm1(x)
+            x_prev = self.norm_mid(x_prev)
+            x_out = x + self.drop_path(self.attn(x_norm, x_norm, x_prev))
+            x_out = x_out + self.drop_path(self.mlp(self.norm2(x_out)))  
+        return [x_out, x]
 
 class VisionTransformer(nn.Module):
     """ Vision Transformer
@@ -272,11 +329,19 @@ class VisionTransformer(nn.Module):
         self.pos_drop = nn.Dropout(p=drop_rate)
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        # self.blocks = nn.Sequential(*[
+        #     Block(
+        #         dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
+        #         attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer)
+        #     for i in range(depth)])
+        
+        atten_typ = ["self", "cross"] * (depth // 2)
         self.blocks = nn.Sequential(*[
-            Block(
+            CustomizedBlock(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
-                attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer)
-            for i in range(depth)])
+                attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer, attn_type=attn)
+            for i, attn in enumerate(atten_typ)])
+
         self.norm = norm_layer(embed_dim)
 
         # Representation layer
@@ -342,7 +407,7 @@ class VisionTransformer(nn.Module):
         else:
             x = torch.cat((cls_token, self.dist_token.expand(x.shape[0], -1, -1), x), dim=1)
         x = self.pos_drop(x + self.pos_embed)
-        x = self.blocks(x)
+        x,_ = self.blocks([x,x])
         x = self.norm(x)
         if self.dist_token is None:
             return self.pre_logits(x[:, 0])
