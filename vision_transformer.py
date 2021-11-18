@@ -244,9 +244,9 @@ class Block(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
     def forward(self, x):
-        x = x + self.drop_path(self.attn(self.norm1(x)))
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
-        return x
+        x_out = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x_out + self.drop_path(self.mlp(self.norm2(x_out)))
+        return [x, x_out] 
 
 class CustomizedBlock(nn.Module):
 
@@ -255,10 +255,9 @@ class CustomizedBlock(nn.Module):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn_type = attn_type
-        if self.attn_type == 'cross':
-            self.norm_mid = norm_layer(dim)
-        # self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
-        self.attn = CrossAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        self.norm_mid = norm_layer(dim)
+        self.attn1 = CrossAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        self.attn2 = CrossAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -267,16 +266,11 @@ class CustomizedBlock(nn.Module):
 
     def forward(self, x):
         x, x_prev = x 
-        if self.attn_type == 'self':
-            x_norm = self.norm1(x)
-            x_out = x + self.drop_path(self.attn(x_norm, x_norm, x_norm))
-            x_out = x_out + self.drop_path(self.mlp(self.norm2(x_out)))
-        else:
-            x_norm = self.norm1(x)
-            x_prev = self.norm_mid(x_prev)
-            x_out = x + self.drop_path(self.attn(x_norm, x_norm, x_prev))
-            x_out = x_out + self.drop_path(self.mlp(self.norm2(x_out)))  
-        return [x_out, x]
+        x_norm = self.norm1(x)
+        x_prev = self.norm_mid(x_prev)
+        x_out = x + self.drop_path(self.attn1(x_norm, x_norm, x_prev)) + self.drop_path(self.attn2(x_norm, x_norm, x_norm)) 
+        x = x_out + self.drop_path(self.mlp(self.norm2(x_out)))  
+        return [x, x_out]
 
 class VisionTransformer(nn.Module):
     """ Vision Transformer
@@ -335,12 +329,18 @@ class VisionTransformer(nn.Module):
         #         attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer)
         #     for i in range(depth)])
         
-        atten_typ = ["self", "cross"] * (depth // 2)
-        self.blocks = nn.Sequential(*[
+        blocks = list()
+        blocks.append( Block(
+                dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
+                attn_drop=attn_drop_rate, drop_path=dpr[0], norm_layer=norm_layer, act_layer=act_layer))
+            
+        blocks += [
             CustomizedBlock(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
                 attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer, attn_type=attn)
-            for i, attn in enumerate(atten_typ)])
+            for i in range(1, depth)]
+        
+        self.blocks = nn.Sequential(*blocks)
 
         self.norm = norm_layer(embed_dim)
 
