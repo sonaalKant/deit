@@ -866,6 +866,14 @@ def deit_tiny_patch16_224(pretrained=False, **kwargs):
     model = _create_vision_transformer('deit_tiny_patch16_224', pretrained=pretrained, **model_kwargs)
     return model
 
+@register_model
+def deit_tiny_patch16_224_custom(pretrained=False, **kwargs):
+    """ DeiT-tiny model @ 224x224 from paper (https://arxiv.org/abs/2012.12877).
+    ImageNet-1k weights from https://github.com/facebookresearch/deit.
+    """
+    model_kwargs = dict(patch_size=16, embed_dim=192, depth=9, num_heads=3, **kwargs)
+    model = _create_vision_transformer('deit_tiny_patch16_224', pretrained=pretrained, **model_kwargs)
+    return model
 
 @register_model
 def deit_small_patch16_224(pretrained=False, **kwargs):
